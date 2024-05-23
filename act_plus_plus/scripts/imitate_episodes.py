@@ -14,17 +14,14 @@ from torchvision import transforms
 from tqdm import tqdm
 import wandb
 
-from act_plus_plus.detr.models.latent_model import Latent_Model_Transformer
-from act_plus_plus.policy import (
+from detr.models.latent_model import Latent_Model_Transformer
+from policy import (
     ACTPolicy,
     CNNMLPPolicy,
     DiffusionPolicy
 )
-from act_plus_plus.sim_env import BOX_POSE
-from act_plus_plus.utils import (
+from utils import (
     load_data,
-    sample_box_pose,
-    sample_insertion_pose,
     compute_dict_mean,
     set_seed,
 )
@@ -302,30 +299,24 @@ def eval_bc(config, ckpt_name, save_episode=True, num_rollouts=50):
     else:
         post_process = lambda a: a * stats['action_std'] + stats['action_mean']
 
-    # load environment
-    if real_robot:
-        from aloha.real_env import make_real_env # requires aloha
-        from aloha.robot_utils import move_grippers # requires aloha
-        from interbotix_common_modules.common_robot.robot import (
-            create_interbotix_global_node,
-            get_interbotix_global_node,
-            robot_startup,
-        )
-        from interbotix_common_modules.common_robot.exceptions import InterbotixException
-        try:
-            node = get_interbotix_global_node()
-        except:
-            node = create_interbotix_global_node('aloha')
-        env = make_real_env(node=node, setup_robots=True, setup_base=True)
-        try:
-            robot_startup(node)
-        except InterbotixException:
-            pass
-        env_max_reward = 0
-    else:
-        from act_plus_plus.sim_env import make_sim_env
-        env = make_sim_env(task_name)
-        env_max_reward = env.task.max_reward
+    from aloha.real_env import make_real_env # requires aloha
+    from aloha.robot_utils import move_grippers # requires aloha
+    from interbotix_common_modules.common_robot.robot import (
+        create_interbotix_global_node,
+        get_interbotix_global_node,
+        robot_startup,
+    )
+    from interbotix_common_modules.common_robot.exceptions import InterbotixException
+    try:
+        node = get_interbotix_global_node()
+    except:
+        node = create_interbotix_global_node('aloha')
+    env = make_real_env(node=node, setup_robots=True, setup_base=True)
+    try:
+        robot_startup(node)
+    except InterbotixException:
+        pass
+    env_max_reward = 0
 
     query_frequency = policy_config['num_queries']
     if temporal_agg:
@@ -341,11 +332,6 @@ def eval_bc(config, ckpt_name, save_episode=True, num_rollouts=50):
     highest_rewards = []
     for rollout_id in range(num_rollouts):
         rollout_id += 0
-        ### set task
-        if 'sim_transfer_cube' in task_name:
-            BOX_POSE[0] = sample_box_pose() # used in sim reset
-        elif 'sim_insertion' in task_name:
-            BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
 
         ts = env.reset()
 
