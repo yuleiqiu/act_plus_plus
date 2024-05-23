@@ -29,8 +29,8 @@ Using ``venv`` is preferred due its ease of use against frameworks like ROS.
 
 ```bash
 sudo apt-get install python3-venv
-python3 -m venv ~/aloha # creates a venv "aloha" in the home directory, can be created anywhere
-source ~/aloha/bin/activate
+python3 -m venv ~/act # creates a venv "act" in the home directory, can be created anywhere
+source ~/act/bin/activate
 pip install torchvision
 pip install torch
 pip install pyquaternion
