@@ -48,7 +48,6 @@ pip install torch
 pip install torchvision
 pip install transforms3d
 pip install wandb
-cd /path/to/act/detr && pip install -e .
 ```
 
 The ``r2d2`` branch of robomimic must also be installed.
