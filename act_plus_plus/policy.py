@@ -42,7 +42,7 @@ class DiffusionPolicy(nn.Module):
                 'input_coord_conv': False
             }))
             pools.append(SpatialSoftmax(**{
-                'input_shape': [512, 15, 20],
+                'input_shape': [512, 15, 27],
                 'num_kp': self.num_kp,
                 'temperature': 1.0,
                 'learnable_temperature': False,
