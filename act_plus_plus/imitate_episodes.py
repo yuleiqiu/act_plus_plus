@@ -153,7 +153,8 @@ def main(args):
     with open(config_path, 'wb') as f:
         pickle.dump(config, f)
     if is_eval:
-        ckpt_names = ['policy_last.ckpt']
+        # ckpt_names = ['policy_last.ckpt']
+        ckpt_names = ['policy_best.ckpt']
         results = []
         for ckpt_name in ckpt_names:
             success_rate, avg_return = eval_bc(
@@ -264,7 +265,7 @@ def eval_bc(config, ckpt_name, save_episode=True, num_rollouts=50):
     # load policy and stats
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
     policy = make_policy(policy_class, policy_config)
-    loading_status = policy.deserialize(torch.load(ckpt_path))
+    loading_status = policy.deserialize(torch.load(ckpt_path, map_location='cuda:0'))
     print(loading_status)
     policy.cuda()
     policy.eval()
@@ -415,7 +416,18 @@ def eval_bc(config, ckpt_name, save_episode=True, num_rollouts=50):
                         all_actions = policy(qpos, curr_image)
                         if real_robot:
                             all_actions = torch.cat([all_actions[:, :-BASE_DELAY, :-2], all_actions[:, BASE_DELAY:, -2:]], dim=2)
-                    raw_action = all_actions[:, t % query_frequency]
+                    if temporal_agg:
+                        all_time_actions[[t], t:t+num_queries-BASE_DELAY] = all_actions
+                        actions_for_curr_step = all_time_actions[:, t]
+                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                        actions_for_curr_step = actions_for_curr_step[actions_populated]
+                        k = 0.01
+                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                        exp_weights = exp_weights / exp_weights.sum()
+                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                    else:
+                        raw_action = all_actions[:, t % query_frequency]
                 elif config['policy_class'] == "CNNMLP":
                     raw_action = policy(qpos, curr_image)
                     all_actions = raw_action.unsqueeze(0)
