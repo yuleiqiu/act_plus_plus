@@ -12,7 +12,6 @@ import numpy as np
 import torch
 from torchvision import transforms
 from tqdm import tqdm
-import wandb
 
 from detr.models.latent_model import Latent_Model_Transformer
 from policy import (
@@ -21,7 +20,6 @@ from policy import (
     DiffusionPolicy
 )
 from utils import (
-    load_data,
     compute_dict_mean,
     set_seed,
 )
@@ -43,8 +41,6 @@ def main(args):
     policy_class = args['policy_class']
     onscreen_render = args['onscreen_render']
     task_name = args['task_name']
-    batch_size_train = args['batch_size']
-    batch_size_val = args['batch_size']
     num_steps = args['num_steps']
     validate_every = args['validate_every']
     save_every = args['save_every']
@@ -52,14 +48,8 @@ def main(args):
 
     # get task parameters
     task_config = TASK_CONFIGS[task_name]
-    dataset_dir = task_config['dataset_dir']
-    # num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
-    stats_dir = task_config.get('stats_dir', None)
-    sample_weights = task_config.get('sample_weights', None)
-    train_ratio = task_config.get('train_ratio', 0.99)
-    name_filter = task_config.get('name_filter', lambda n: True)
 
     # fixed parameters
     state_dim = 14
@@ -111,15 +101,7 @@ def main(args):
     else:
         raise NotImplementedError
 
-    actuator_config = {
-        'actuator_network_dir': args['actuator_network_dir'],
-        'history_len': args['history_len'],
-        'future_len': args['future_len'],
-        'prediction_len': args['prediction_len'],
-    }
-
     config = {
-        'actuator_config': actuator_config,
         'camera_names': camera_names,
         'ckpt_dir': ckpt_dir,
         'episode_len': episode_len,
@@ -141,15 +123,6 @@ def main(args):
     if not os.path.isdir(ckpt_dir):
         os.makedirs(ckpt_dir)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
-    expr_name = ckpt_dir.split('/')[-1]
-    if not is_eval:
-        wandb.init(
-            project="ExampleProject",
-            reinit=True,
-            entity="ExampleEntity",
-            name=expr_name,
-        )
-        wandb.config.update(config)
     with open(config_path, 'wb') as f:
         pickle.dump(config, f)
     if is_eval:
@@ -163,41 +136,12 @@ def main(args):
                 save_episode=True,
                 num_rollouts=10,
             )
-            # wandb.log({'success_rate': success_rate, 'avg_return': avg_return})
             results.append([ckpt_name, success_rate, avg_return])
 
         for ckpt_name, success_rate, avg_return in results:
             print(f'{ckpt_name}: {success_rate=} {avg_return=}')
         print()
         exit()
-
-    train_dataloader, val_dataloader, stats, _ = load_data(
-        dataset_dir,
-        name_filter,
-        camera_names,
-        batch_size_train,
-        batch_size_val,
-        args['chunk_size'],
-        args['skip_mirrored_data'],
-        policy_class,
-        stats_dir_l=stats_dir,
-        sample_weights=sample_weights,
-        train_ratio=train_ratio,
-    )
-
-    # save dataset stats
-    stats_path = os.path.join(ckpt_dir, 'dataset_stats.pkl')
-    with open(stats_path, 'wb') as f:
-        pickle.dump(stats, f)
-
-    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
-    best_step, min_val_loss, best_state_dict = best_ckpt_info
-
-    # save best checkpoint
-    ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
-    torch.save(best_state_dict, ckpt_path)
-    print(f'Best ckpt, val loss {min_val_loss:.6f} @ step{best_step}')
-    wandb.finish()
 
 
 def make_policy(policy_class, policy_config):
@@ -256,11 +200,9 @@ def eval_bc(config, ckpt_name, save_episode=True, num_rollouts=50):
     policy_config = config['policy_config']
     camera_names = config['camera_names']
     max_timesteps = config['episode_len']
-    task_name = config['task_name']
     temporal_agg = config['temporal_agg']
     onscreen_cam = 'angle'
     vq = config['policy_config']['vq']
-    actuator_config = config['actuator_config']
 
     # load policy and stats
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
@@ -515,7 +457,6 @@ def eval_bc(config, ckpt_name, save_episode=True, num_rollouts=50):
 
     return success_rate, avg_return
 
-
 def forward_pass(data, policy):
     image_data, qpos_data, action_data, is_pad = data
 
@@ -525,84 +466,6 @@ def forward_pass(data, policy):
     is_pad = is_pad.cuda()
 
     return policy(qpos_data, image_data, action_data, is_pad)
-
-
-def train_bc(train_dataloader, val_dataloader, config):
-    num_steps = config['num_steps']
-    ckpt_dir = config['ckpt_dir']
-    seed = config['seed']
-    policy_class = config['policy_class']
-    policy_config = config['policy_config']
-    validate_every = config['validate_every']
-    save_every = config['save_every']
-
-    set_seed(seed)
-
-    policy = make_policy(policy_class, policy_config)
-    if config['resume_ckpt_path'] is not None:
-        loading_status = policy.deserialize(torch.load(config['resume_ckpt_path']))
-        print(f'Resume policy from: {config["resume_ckpt_path"]}, Status: {loading_status}')
-    policy.cuda()
-    optimizer = make_optimizer(policy_class, policy)
-
-    min_val_loss = np.inf
-    best_ckpt_info = None
-
-    train_dataloader = repeater(train_dataloader)
-    for step in tqdm(range(num_steps+1)):
-        # validation
-        if step % validate_every == 0:
-            print('validating')
-
-            with torch.inference_mode():
-                policy.eval()
-                validation_dicts = []
-                for batch_idx, data in enumerate(val_dataloader):
-                    forward_dict = forward_pass(data, policy)
-                    validation_dicts.append(forward_dict)
-                    if batch_idx > 50:
-                        break
-
-                validation_summary = compute_dict_mean(validation_dicts)
-
-                epoch_val_loss = validation_summary['loss']
-                if epoch_val_loss < min_val_loss:
-                    min_val_loss = epoch_val_loss
-                    best_ckpt_info = (step, min_val_loss, deepcopy(policy.serialize()))
-            for k in list(validation_summary.keys()):
-                validation_summary[f'val_{k}'] = validation_summary.pop(k)
-            wandb.log(validation_summary, step=step)
-            print(f'Val loss:   {epoch_val_loss:.5f}')
-            summary_string = ''
-            for k, v in validation_summary.items():
-                summary_string += f'{k}: {v.item():.3f} '
-            print(summary_string)
-
-        # training
-        policy.train()
-        optimizer.zero_grad()
-        data = next(train_dataloader)
-        forward_dict = forward_pass(data, policy)
-        # backward
-        loss = forward_dict['loss']
-        loss.backward()
-        optimizer.step()
-        wandb.log(forward_dict, step=step) # not great, make training 1-2% slower
-
-        if step % save_every == 0:
-            ckpt_path = os.path.join(ckpt_dir, f'policy_step_{step}_seed_{seed}.ckpt')
-            torch.save(policy.serialize(), ckpt_path)
-
-    ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    torch.save(policy.serialize(), ckpt_path)
-
-    best_step, min_val_loss, best_state_dict = best_ckpt_info
-    ckpt_path = os.path.join(ckpt_dir, f'policy_step_{best_step}_seed_{seed}.ckpt')
-    torch.save(best_state_dict, ckpt_path)
-    print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at step {best_step}')
-
-    return best_ckpt_info
-
 
 def repeater(data_loader):
     epoch = 0
@@ -704,29 +567,6 @@ if __name__ == '__main__':
         help='Skip mirrored data during training',
         required=False,
     )
-    parser.add_argument(
-        '--actuator_network_dir',
-        action='store',
-        type=str,
-        help='actuator_network_dir',
-        required=False,
-    )
-    parser.add_argument(
-        '--history_len',
-        action='store',
-        type=int,
-    )
-    parser.add_argument(
-        '--future_len',
-        action='store',
-        type=int,
-    )
-    parser.add_argument(
-        '--prediction_len',
-        action='store',
-        type=int,
-    )
-
     # for ACT
     parser.add_argument(
         '--kl_weight',
